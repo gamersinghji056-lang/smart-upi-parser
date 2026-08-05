@@ -28,7 +28,7 @@ export async function readTabular(file: File): Promise<RawRow[]> {
       header: 1,
       blankrows: false,
       defval: "",
-686: raw: false,
+raw: false,
     } as never);
 
     for (const row of grid) {

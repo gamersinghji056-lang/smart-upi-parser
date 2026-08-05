@@ -26,7 +26,7 @@ const NOISE_PATTERNS: RegExp[] = [
   /this\s+is\s+a\s+(computer|system)\s+generated/i,
   /registered\s+office/i,
   /generated\s+on/i,
-};
+];
 
 export function isNoiseRow(text: string): boolean {
   if (!text) return true;
