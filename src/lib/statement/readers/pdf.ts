@@ -37,6 +37,7 @@ export async function readPdf(file: File): Promise<RawRow[]> {
 
   const rows: RawRow[] = [];
   let index = 0;
+  let grid: number[] | null = null;
 
   try {
     for (let p = 1; p <= doc.numPages; p += 1) {
