@@ -57,7 +57,14 @@ export async function readPdf(file: File): Promise<RawRow[]> {
       }
 
       for (const line of clusterRows(items)) {
-        const cells = clusterCells(line);
+        const chunks = clusterCells(line);
+        if (chunks.length === 0) continue;
+
+        // Lock onto the page's column grid the first time a header-like line
+        // appears, then snap every following row into those same columns.
+        if (isHeaderLine(chunks)) grid = chunks.map((c) => c.x);
+        const cells = grid ? snapToGrid(chunks, grid) : chunks.map((c) => c.text);
+
         const text = cells.join(" ").trim();
         if (!text) continue;
         rows.push({ cells, text, source: `page ${p}`, index: index++ });
@@ -69,6 +76,49 @@ export async function readPdf(file: File): Promise<RawRow[]> {
 
   if (rows.length === 0) throw new StatementParseError("Unable to read this bank statement.");
   return rows;
+}
+
+interface Chunk {
+  text: string;
+  x: number;
+  end: number;
+}
+
+const HEADER_HINTS = [
+  /date/i,
+  /narration|description|particular|remark|detail/i,
+  /debit|withdraw/i,
+  /credit|deposit/i,
+  /balance/i,
+  /amount/i,
+];
+
+function isHeaderLine(chunks: Chunk[]): boolean {
+  if (chunks.length < 3) return false;
+  const hits = HEADER_HINTS.filter((h) => chunks.some((c) => h.test(c.text) && c.text.length <= 40));
+  const hasDate = chunks.some((c) => /date/i.test(c.text));
+  return hasDate && hits.length >= 3;
+}
+
+/** Places chunks into the detected column slots by horizontal overlap. */
+function snapToGrid(chunks: Chunk[], grid: number[]): string[] {
+  const slots: string[] = grid.map(() => "");
+  for (const chunk of chunks) {
+    const center = (chunk.x + chunk.end) / 2;
+    let best = 0;
+    let bestDistance = Infinity;
+    grid.forEach((start, i) => {
+      const nextStart = grid[i + 1] ?? Infinity;
+      const inside = chunk.x >= start - 4 && center < nextStart;
+      const distance = inside ? 0 : Math.min(Math.abs(chunk.x - start), Math.abs(center - start));
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = i;
+      }
+    });
+    slots[best] = slots[best] ? `${slots[best]} ${chunk.text}` : chunk.text;
+  }
+  return slots;
 }
 
 /** Groups items sharing (approximately) the same baseline into one row. */
@@ -94,20 +144,27 @@ function clusterRows(items: Item[]): Item[][] {
 }
 
 /** Splits a row's items into cells using horizontal whitespace gaps. */
-function clusterCells(line: Item[]): string[] {
-  const cells: string[] = [];
-  let buffer = line[0] ? line[0].str : "";
+function clusterCells(line: Item[]): Chunk[] {
+  const chunks: Chunk[] = [];
+  if (line.length === 0) return chunks;
+
+  let buffer = line[0]!.str;
+  let start = line[0]!.x;
+  let end = line[0]!.x + line[0]!.w;
+
   for (let i = 1; i < line.length; i += 1) {
     const prev = line[i - 1]!;
     const item = line[i]!;
     const gap = item.x - (prev.x + prev.w);
     if (gap > 6) {
-      cells.push(buffer.trim());
+      if (buffer.trim()) chunks.push({ text: buffer.trim(), x: start, end });
       buffer = item.str;
+      start = item.x;
     } else {
       buffer += (gap > 0.8 ? " " : "") + item.str;
     }
+    end = item.x + item.w;
   }
-  if (buffer.trim()) cells.push(buffer.trim());
-  return cells.filter((c) => c.length > 0);
+  if (buffer.trim()) chunks.push({ text: buffer.trim(), x: start, end });
+  return chunks;
 }
