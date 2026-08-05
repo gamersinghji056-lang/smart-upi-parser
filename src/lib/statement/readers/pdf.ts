@@ -17,10 +17,14 @@ export async function readPdf(file: File): Promise<RawRow[]> {
   let pdfjs: typeof import("pdfjs-dist");
   try {
     pdfjs = await import("pdfjs-dist");
+  } catch {
+    throw new StatementParseError("Unable to read this bank statement.");
+  }
+  try {
     const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
   } catch {
-    throw new StatementParseError("Unable to read this bank statement.");
+    // Falls back to pdf.js' bundled/inline worker resolution.
   }
 
   let doc;
