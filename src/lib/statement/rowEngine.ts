@@ -3,11 +3,16 @@ import { clean, formatAmount, isNoiseRow, parseAmount, parseDate } from "./norma
 import { matchesMode } from "./modes";
 
 const CREDIT_TOKENS =
-  /\b(cr|credit|credited|deposit|deposited|received|receive|incoming|inward|by\s+transfer)\b/i;
+  /\b(cr|credit|credited|credit\s*amount|credit\s*value|deposit|deposits|deposited|received|receive|recd|incoming|inward|by\s+transfer)\b/i;
 const DEBIT_TOKENS =
-  /\b(dr|debit|debited|withdraw(al|n)?|sent|paid|payment\s+to|outgoing|outward|to\s+transfer)\b/i;
+  /\b(dr|debit|debited|debit\s*amount|withdraw(al|l|als|n)?|sent|paid|payment\s+to|outgoing|outward|to\s+transfer)\b/i;
 
 type Direction = "credit" | "debit" | "unknown";
+
+/** Per-document context (running balance) — never used to borrow row values. */
+export interface RowContext {
+  prevBalance?: number | null;
+}
 
 /** Merges every numeric cell in a row with its column index. */
 interface NumericCell {
@@ -51,16 +56,19 @@ function resolveDate(row: RawRow, map: ColumnMap): string | null {
 
 /** Extracts the mode reference (UPI UTR) from within the same row only. */
 function resolveReference(row: RawRow, mode: ModeDefinition): string | null {
-  const candidates: { value: string; score: number }[] = [];
+  const primary: { value: string; score: number }[] = [];
+  const fallback: { value: string; score: number }[] = [];
 
   row.cells.forEach((cell) => {
     const text = clean(cell);
-    // Tokenise on anything that is not a digit so 12-digit runs stand alone.
+    // Tokenise on anything that is not a digit so digit runs stand alone.
     const tokens = text.split(/[^0-9]+/).filter(Boolean);
     const cellHasMode = matchesMode(text, mode);
 
     tokens.forEach((token) => {
-      if (!mode.referencePattern.test(token)) return;
+      const isPrimary = mode.referencePattern.test(token);
+      const isFallback = !isPrimary && (mode.fallbackReferencePattern?.test(token) ?? false);
+      if (!isPrimary && !isFallback) return;
       // Reject values that are actually a date-time stamp like 202512120930
       if (/^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/.test(token)) return;
       let score = 1;
@@ -68,13 +76,49 @@ function resolveReference(row: RawRow, mode: ModeDefinition): string | null {
       // A reference immediately adjacent to the mode keyword is the strongest signal.
       const near = new RegExp(`upi[^0-9a-z]{0,12}(?:[a-z0-9@.\\-]*[^0-9a-z]){0,6}${token}`, "i");
       if (near.test(text)) score += 2;
-      candidates.push({ value: token, score });
+      (isPrimary ? primary : fallback).push({ value: token, score });
     });
   });
 
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates[0]!.value;
+  const pool = primary.length > 0 ? primary : fallback;
+  if (pool.length === 0) return null;
+  pool.sort((a, b) => b.score - a.score);
+  return pool[0]!.value;
+}
+
+/** The running balance of the row, used only to sanity-check the amount. */
+function resolveBalance(row: RawRow, map: ColumnMap, nums: NumericCell[]): NumericCell | null {
+  if (map.balance !== undefined) {
+    const direct = nums.find((n) => n.index === map.balance);
+    if (direct) return direct;
+    // Merged / shifted spreadsheet cells: allow a one-column drift.
+    const near = nums.find((n) => Math.abs(n.index - map.balance!) <= 1 && looksLikeMoney(n.raw));
+    if (near) return near;
+  }
+  const money = nums.filter((n) => looksLikeMoney(n.raw));
+  if (money.length > 1) return money[money.length - 1]!;
+  return null;
+}
+
+/** Reads a mapped money column, tolerating a one-column drift from merged cells. */
+function readMoneyColumn(
+  index: number | undefined,
+  nums: NumericCell[],
+  balanceIndex: number | null,
+  otherIndex: number | undefined,
+): NumericCell | null {
+  if (index === undefined) return null;
+  const exact = nums.find((n) => n.index === index && Math.abs(n.value) > 0);
+  if (exact) return exact;
+  const drifted = nums.filter(
+    (n) =>
+      Math.abs(n.index - index) <= 1 &&
+      n.index !== balanceIndex &&
+      n.index !== otherIndex &&
+      Math.abs(n.value) > 0 &&
+      looksLikeMoney(n.raw),
+  );
+  return drifted.length === 1 ? drifted[0]! : null;
 }
 
 /** Decides credit vs debit using columns first, then row-level markers. */
@@ -82,24 +126,30 @@ function resolveDirectionAndAmount(
   row: RawRow,
   map: ColumnMap,
   nums: NumericCell[],
+  ctx: RowContext,
 ): { direction: Direction; amount: number | null } {
-  const balanceIndex = map.balance;
+  const balanceCell = resolveBalance(row, map, nums);
+  const balanceIndex = balanceCell ? balanceCell.index : null;
+  const marker = detectMarker(row, map);
 
-  // 1. Explicit credit / debit columns.
+  // 1. Explicit credit / debit (or deposit / withdrawal) columns.
   if (map.credit !== undefined || map.debit !== undefined) {
-    const credit = map.credit !== undefined ? parseAmount(row.cells[map.credit] ?? "") : null;
-    const debit = map.debit !== undefined ? parseAmount(row.cells[map.debit] ?? "") : null;
-    if (credit !== null && Math.abs(credit) > 0) return { direction: "credit", amount: Math.abs(credit) };
-    if (debit !== null && Math.abs(debit) > 0) return { direction: "debit", amount: Math.abs(debit) };
+    const credit = readMoneyColumn(map.credit, nums, balanceIndex, map.debit);
+    const debit = readMoneyColumn(map.debit, nums, balanceIndex, map.credit);
+    if (credit && (!debit || credit.index !== debit.index)) {
+      if (credit) return { direction: "credit", amount: Math.abs(credit.value) };
+    }
+    if (debit && (!credit || credit.index !== debit.index)) {
+      return { direction: "debit", amount: Math.abs(debit.value) };
+    }
   }
 
   // 2. Amount column plus a DR/CR indicator column or in-row marker.
-  const marker = detectMarker(row, map);
-  if (map.amount !== undefined) {
+  if (map.amount !== undefined && map.amount !== balanceIndex) {
     const amount = parseAmount(row.cells[map.amount] ?? "");
     if (amount !== null && amount !== 0) {
       if (marker !== "unknown") return { direction: marker, amount: Math.abs(amount) };
-      if (amount > 0) return { direction: "credit", amount };
+      if (amount > 0) return { direction: withBalance(ctx, balanceCell, amount, "credit"), amount };
       return { direction: "debit", amount: Math.abs(amount) };
     }
   }
@@ -108,10 +158,26 @@ function resolveDirectionAndAmount(
   const money = nums.filter((n) => n.index !== balanceIndex && looksLikeMoney(n.raw) && Math.abs(n.value) > 0);
   if (money.length === 0) return { direction: marker, amount: null };
 
-  // The balance is conventionally the last money value on the row.
-  const withoutBalance = money.length > 1 ? money.slice(0, -1) : money;
-  const chosen = withoutBalance[withoutBalance.length - 1]!;
-  return { direction: marker, amount: Math.abs(chosen.value) };
+  const chosen = money[money.length - 1]!;
+  const amount = Math.abs(chosen.value);
+  if (marker !== "unknown") return { direction: marker, amount };
+  // 4. Last resort: a matching increase in the running balance means a credit.
+  return { direction: withBalance(ctx, balanceCell, amount, "unknown"), amount };
+}
+
+/** Uses the balance movement between rows to classify an otherwise unknown row. */
+function withBalance(
+  ctx: RowContext,
+  balanceCell: NumericCell | null,
+  amount: number,
+  fallback: Direction,
+): Direction {
+  const previous = ctx.prevBalance;
+  if (previous === null || previous === undefined || !balanceCell) return fallback;
+  const delta = Math.abs(balanceCell.value) - previous;
+  if (Math.abs(delta - amount) <= 0.01) return "credit";
+  if (Math.abs(delta + amount) <= 0.01) return "debit";
+  return fallback;
 }
 
 function detectMarker(row: RawRow, map: ColumnMap): Direction {
@@ -132,11 +198,22 @@ function detectMarker(row: RawRow, map: ColumnMap): Direction {
   return "unknown";
 }
 
+/** The row's running balance, exposed so the document loop can track it. */
+export function balanceOfRow(row: RawRow, map: ColumnMap): number | null {
+  const cell = resolveBalance(row, map, numericCells(row));
+  return cell ? Math.abs(cell.value) : null;
+}
+
 /**
  * Processes a single statement row independently and returns a transaction
  * when — and only when — every validation rule passes.
  */
-export function extractFromRow(row: RawRow, map: ColumnMap, mode: ModeDefinition): Transaction | null {
+export function extractFromRow(
+  row: RawRow,
+  map: ColumnMap,
+  mode: ModeDefinition,
+  ctx: RowContext = {},
+): Transaction | null {
   if (isNoiseRow(row.text)) return null;
   if (!matchesMode(row.text, mode)) return null;
   if (mode.accept && !mode.accept(row)) return null;
@@ -148,7 +225,7 @@ export function extractFromRow(row: RawRow, map: ColumnMap, mode: ModeDefinition
   if (!utr) return null;
 
   const nums = numericCells(row);
-  const { direction, amount } = resolveDirectionAndAmount(row, map, nums);
+  const { direction, amount } = resolveDirectionAndAmount(row, map, nums, ctx);
   if (amount === null || amount === 0) return null;
   if (direction !== "credit") return null;
 
