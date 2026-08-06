@@ -139,10 +139,11 @@ function snapToBands(chunks: Chunk[], bands: Band[]): string[] {
     let bestOverlap = 0;
     let bestDistance = Infinity;
     bands.forEach((band, i) => {
-      const overlap = Math.min(chunk.end, band.end) - Math.max(chunk.x, band.start);
-      const distance = overlap > 0 ? 0 : Math.min(Math.abs(chunk.x - band.end), Math.abs(band.start - chunk.end));
-      if (overlap > bestOverlap || (bestOverlap === 0 && overlap === 0 && distance < bestDistance)) {
-        if (overlap > bestOverlap) bestOverlap = overlap;
+      const overlap = Math.max(0, Math.min(chunk.end, band.end) - Math.max(chunk.x, band.start));
+      const distance =
+        overlap > 0 ? 0 : Math.min(Math.abs(chunk.x - band.end), Math.abs(band.start - chunk.end));
+      if (overlap > bestOverlap || (bestOverlap === 0 && distance < bestDistance)) {
+        bestOverlap = Math.max(bestOverlap, overlap);
         bestDistance = distance;
         best = i;
       }
