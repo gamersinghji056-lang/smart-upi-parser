@@ -245,6 +245,8 @@ export function extractFromRow(
   if (direction !== "credit") return null;
   // A reference number mistaken for money is never a valid amount.
   if (String(Math.round(amount)) === String(Number(utr))) return null;
+  // UPI is capped well below this; anything larger is a misread digit run.
+  if (amount >= 1e8) return null;
 
   return { date, utr, amount: formatAmount(amount), mode: mode.id };
 }
