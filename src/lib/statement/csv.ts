@@ -4,8 +4,21 @@ function escapeCell(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
+export function totalVolume(rows: Transaction[]): number {
+  return rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+}
+
+export function formatInr(value: number): string {
+  return value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function toCsv(rows: Transaction[]): string {
-  const lines = ["Date,UTR,Amount,Mode"];
+  const lines = [
+    ["Total Transactions", String(rows.length)].map(escapeCell).join(","),
+    ["Total UPI Credit Volume", totalVolume(rows).toFixed(2)].map(escapeCell).join(","),
+    "",
+    "Date,UTR,Amount,Mode",
+  ];
   for (const row of rows) {
     lines.push([row.date, row.utr, row.amount, row.mode].map(escapeCell).join(","));
   }
@@ -27,8 +40,9 @@ export function downloadCsv(rows: Transaction[]): void {
   const link = document.createElement("a");
   link.href = url;
   link.download = csvFileName();
+  link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

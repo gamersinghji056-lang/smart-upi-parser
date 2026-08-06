@@ -1,8 +1,9 @@
 import { Download } from "lucide-react";
 import type { Transaction } from "@/lib/statement/types";
-import { downloadCsv } from "@/lib/statement/csv";
+import { downloadCsv, formatInr, totalVolume } from "@/lib/statement/csv";
 
 export function ResultsTable({ rows }: { rows: Transaction[] }) {
+  const volume = totalVolume(rows);
   return (
     <section className="panel overflow-hidden">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -21,6 +22,18 @@ export function ResultsTable({ rows }: { rows: Transaction[] }) {
           Download CSV
         </button>
       </header>
+
+      <dl className="grid grid-cols-1 gap-px border-b border-border bg-border sm:grid-cols-2">
+        <div className="bg-surface px-5 py-4">
+          <dt className="text-xs uppercase tracking-wide text-muted-foreground">Total transactions</dt>
+          <dd className="mt-1 text-2xl font-semibold tabular">{rows.length}</dd>
+        </div>
+        <div className="bg-surface px-5 py-4">
+          <dt className="text-xs uppercase tracking-wide text-muted-foreground">Total UPI credit volume</dt>
+          <dd className="mt-1 text-2xl font-semibold tabular">₹{formatInr(volume)}</dd>
+        </div>
+      </dl>
+
 
       <div className="max-h-[32rem] overflow-auto">
         <table className="w-full text-left text-sm">
