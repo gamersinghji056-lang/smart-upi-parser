@@ -240,6 +240,8 @@ export function extractFromRow(
   const { direction, amount } = resolveDirectionAndAmount(row, map, nums, ctx);
   if (amount === null || amount === 0) return null;
   if (direction !== "credit") return null;
+  // A reference number mistaken for money is never a valid amount.
+  if (String(Math.round(amount)) === String(Number(utr))) return null;
 
   return { date, utr, amount: formatAmount(amount), mode: mode.id };
 }
