@@ -46,6 +46,8 @@ export interface ModeDefinition {
   keywords: RegExp[];
   /** Reference-number validator (e.g. 12 digits for UPI UTR). */
   referencePattern: RegExp;
+  /** Looser validator used only when no primary reference exists in the row. */
+  fallbackReferencePattern?: RegExp;
   /** Optional extra guard applied to a candidate row. */
   accept?: (row: RawRow) => boolean;
 }
