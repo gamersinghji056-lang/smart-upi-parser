@@ -200,5 +200,3 @@ function clusterCells(line: Item[]): Chunk[] {
   if (buffer.trim()) chunks.push({ text: buffer.trim(), x: start, end });
   return chunks;
 }
-
-export const __debug = { buildBands, snapToBands, clusterRows, clusterCells };
