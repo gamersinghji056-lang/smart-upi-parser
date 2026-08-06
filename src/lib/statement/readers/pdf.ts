@@ -47,7 +47,7 @@ export async function readPdf(file: File): Promise<RawRow[]> {
   let doc;
   try {
     const buffer = await file.arrayBuffer();
-    doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false }).promise;
+    doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
   } catch (err) {
     throw toFriendlyError(err);
   }
