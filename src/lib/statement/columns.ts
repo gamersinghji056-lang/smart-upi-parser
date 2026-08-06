@@ -75,6 +75,11 @@ function headerScore(row: RawRow): { score: number; map: ColumnMap } {
   return { score, map };
 }
 
+/** True when a row is a table header (label cells only, no actual values). */
+export function isHeaderLikeRow(row: RawRow): boolean {
+  return headerScore(row).score >= 3;
+}
+
 /**
  * Scans the first portion of the document for the best header row and returns
  * the resulting column map (empty when the layout has no usable header).
