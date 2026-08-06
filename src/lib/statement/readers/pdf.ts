@@ -1,11 +1,28 @@
 import type { RawRow } from "../types";
 import { StatementParseError, clean } from "./shared";
+import { parseDate } from "../normalize";
 
 interface Item {
   str: string;
   x: number;
   y: number;
   w: number;
+}
+
+const UNREADABLE = "Unable to read this bank statement.";
+const ENCRYPTED =
+  "This PDF is password protected. Please upload the unlocked / original bank statement.";
+const CORRUPTED = "This PDF appears to be corrupted or invalid. Please re-download it from your bank.";
+const NO_TEXT =
+  "This PDF has no readable text layer (it looks scanned). Please upload the original bank-generated PDF.";
+
+function toFriendlyError(err: unknown): StatementParseError {
+  const name = (err as { name?: string } | null)?.name ?? "";
+  const message = String((err as { message?: string } | null)?.message ?? "");
+  if (name === "PasswordException" || /password/i.test(message)) return new StatementParseError(ENCRYPTED);
+  if (name === "InvalidPDFException" || /invalid pdf|corrupt/i.test(message))
+    return new StatementParseError(CORRUPTED);
+  return new StatementParseError(UNREADABLE);
 }
 
 /**
@@ -18,7 +35,7 @@ export async function readPdf(file: File): Promise<RawRow[]> {
   try {
     pdfjs = await import("pdfjs-dist");
   } catch {
-    throw new StatementParseError("Unable to read this bank statement.");
+    throw new StatementParseError(UNREADABLE);
   }
   try {
     const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
@@ -30,14 +47,13 @@ export async function readPdf(file: File): Promise<RawRow[]> {
   let doc;
   try {
     const buffer = await file.arrayBuffer();
-    doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
-  } catch {
-    throw new StatementParseError("Unable to read this bank statement.");
+    doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false }).promise;
+  } catch (err) {
+    throw toFriendlyError(err);
   }
 
   const rows: RawRow[] = [];
   let index = 0;
-  let grid: number[] | null = null;
 
   try {
     for (let p = 1; p <= doc.numPages; p += 1) {
@@ -57,25 +73,24 @@ export async function readPdf(file: File): Promise<RawRow[]> {
         });
       }
 
-      for (const line of clusterRows(items)) {
-        const chunks = clusterCells(line);
-        if (chunks.length === 0) continue;
+      const lines = clusterRows(items).map((line) => clusterCells(line)).filter((c) => c.length > 0);
+      // Column bands are learned from the page's own transaction lines, so the
+      // grid follows where the values actually sit rather than where a header
+      // label happens to start (labels are often centred over their column).
+      const bands = buildBands(lines);
 
-        // Lock onto the page's column grid the first time a header-like line
-        // appears, then snap every following row into those same columns.
-        if (isHeaderLine(chunks)) grid = chunks.map((c) => c.x);
-        const cells = grid ? snapToGrid(chunks, grid) : chunks.map((c) => c.text);
-
+      for (const chunks of lines) {
+        const cells = bands.length >= 3 ? snapToBands(chunks, bands) : chunks.map((c) => c.text);
         const text = cells.join(" ").trim();
         if (!text) continue;
         rows.push({ cells, text, source: `page ${p}`, index: index++ });
       }
     }
-  } catch {
-    throw new StatementParseError("Unable to read this bank statement.");
+  } catch (err) {
+    throw toFriendlyError(err);
   }
 
-  if (rows.length === 0) throw new StatementParseError("Unable to read this bank statement.");
+  if (rows.length === 0) throw new StatementParseError(NO_TEXT);
   return rows;
 }
 
@@ -85,34 +100,49 @@ interface Chunk {
   end: number;
 }
 
-const HEADER_HINTS = [
-  /date/i,
-  /narration|description|particular|remark|detail/i,
-  /debit|withdraw/i,
-  /credit|deposit/i,
-  /balance/i,
-  /amount/i,
-];
+type Band = { start: number; end: number };
 
-function isHeaderLine(chunks: Chunk[]): boolean {
+/** A line that carries a date is a transaction line: it defines the real grid. */
+function isDataLine(chunks: Chunk[]): boolean {
   if (chunks.length < 3) return false;
-  const hits = HEADER_HINTS.filter((h) => chunks.some((c) => h.test(c.text) && c.text.length <= 40));
-  const hasDate = chunks.some((c) => /date/i.test(c.text));
-  return hasDate && hits.length >= 3;
+  return chunks.some((c) => c.text.length <= 30 && parseDate(c.text) !== null);
 }
 
-/** Places chunks into the detected column slots by horizontal overlap. */
-function snapToGrid(chunks: Chunk[], grid: number[]): string[] {
-  const slots: string[] = grid.map(() => "");
+const BAND_GAP = 3;
+
+function buildBands(lines: Chunk[][]): Band[] {
+  const spans: Band[] = [];
+  for (const line of lines) {
+    if (!isDataLine(line)) continue;
+    for (const c of line) spans.push({ start: c.x, end: Math.max(c.end, c.x + 1) });
+  }
+  if (spans.length === 0) return [];
+  spans.sort((a, b) => a.start - b.start);
+
+  const bands: Band[] = [{ ...spans[0]! }];
+  for (const span of spans.slice(1)) {
+    const last = bands[bands.length - 1]!;
+    if (span.start <= last.end + BAND_GAP) {
+      last.end = Math.max(last.end, span.end);
+    } else {
+      bands.push({ ...span });
+    }
+  }
+  return bands;
+}
+
+/** Places chunks into the learned column bands by overlap, then by distance. */
+function snapToBands(chunks: Chunk[], bands: Band[]): string[] {
+  const slots: string[] = bands.map(() => "");
   for (const chunk of chunks) {
-    const center = (chunk.x + chunk.end) / 2;
     let best = 0;
+    let bestOverlap = 0;
     let bestDistance = Infinity;
-    grid.forEach((start, i) => {
-      const nextStart = grid[i + 1] ?? Infinity;
-      const inside = chunk.x >= start - 4 && center < nextStart;
-      const distance = inside ? 0 : Math.min(Math.abs(chunk.x - start), Math.abs(center - start));
-      if (distance < bestDistance) {
+    bands.forEach((band, i) => {
+      const overlap = Math.min(chunk.end, band.end) - Math.max(chunk.x, band.start);
+      const distance = overlap > 0 ? 0 : Math.min(Math.abs(chunk.x - band.end), Math.abs(band.start - chunk.end));
+      if (overlap > bestOverlap || (bestOverlap === 0 && overlap === 0 && distance < bestDistance)) {
+        if (overlap > bestOverlap) bestOverlap = overlap;
         bestDistance = distance;
         best = i;
       }
