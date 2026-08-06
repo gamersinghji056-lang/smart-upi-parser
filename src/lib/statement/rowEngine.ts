@@ -154,13 +154,7 @@ function resolveDirectionAndAmount(
     }
   }
 
-    if (credit && (!debit || credit.index !== debit.index)) {
-      if (credit) return { direction: "credit", amount: Math.abs(credit.value) };
-    }
-    if (debit && (!credit || credit.index !== debit.index)) {
-      return { direction: "debit", amount: Math.abs(debit.value) };
-    }
-  }
+
 
   // 2. Amount column plus a DR/CR indicator column or in-row marker.
   if (map.amount !== undefined && map.amount !== balanceIndex) {
