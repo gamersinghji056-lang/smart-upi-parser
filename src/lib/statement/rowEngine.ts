@@ -105,7 +105,7 @@ function readMoneyColumn(
   index: number | undefined,
   nums: NumericCell[],
   balanceIndex: number | null,
-  otherIndex: number | undefined,
+  reserved: Set<number>,
 ): NumericCell | null {
   if (index === undefined) return null;
   const exact = nums.find((n) => n.index === index && Math.abs(n.value) > 0);
@@ -114,11 +114,21 @@ function readMoneyColumn(
     (n) =>
       Math.abs(n.index - index) <= 1 &&
       n.index !== balanceIndex &&
-      n.index !== otherIndex &&
+      !reserved.has(n.index) &&
       Math.abs(n.value) > 0 &&
       looksLikeMoney(n.raw),
   );
   return drifted.length === 1 ? drifted[0]! : null;
+}
+
+/** Column indices owned by a role other than the one being read. */
+function reservedIndices(map: ColumnMap, own: (keyof ColumnMap)[]): Set<number> {
+  const set = new Set<number>();
+  (Object.keys(map) as (keyof ColumnMap)[]).forEach((role) => {
+    const index = map[role];
+    if (index !== undefined && !own.includes(role)) set.add(index);
+  });
+  return set;
 }
 
 /** Decides credit vs debit using columns first, then row-level markers. */
@@ -134,8 +144,16 @@ function resolveDirectionAndAmount(
 
   // 1. Explicit credit / debit (or deposit / withdrawal) columns.
   if (map.credit !== undefined || map.debit !== undefined) {
-    const credit = readMoneyColumn(map.credit, nums, balanceIndex, map.debit);
-    const debit = readMoneyColumn(map.debit, nums, balanceIndex, map.credit);
+    const credit = readMoneyColumn(map.credit, nums, balanceIndex, reservedIndices(map, ["credit"]));
+    const debit = readMoneyColumn(map.debit, nums, balanceIndex, reservedIndices(map, ["debit"]));
+    if (credit && (!debit || credit.index !== debit.index)) {
+      if (credit) return { direction: "credit", amount: Math.abs(credit.value) };
+    }
+    if (debit && (!credit || credit.index !== debit.index)) {
+      return { direction: "debit", amount: Math.abs(debit.value) };
+    }
+  }
+
     if (credit && (!debit || credit.index !== debit.index)) {
       if (credit) return { direction: "credit", amount: Math.abs(credit.value) };
     }
