@@ -108,7 +108,10 @@ function readMoneyColumn(
   reserved: Set<number>,
 ): NumericCell | null {
   if (index === undefined) return null;
-  const exact = nums.find((n) => n.index === index && Math.abs(n.value) > 0);
+  const anyMoney = nums.some((n) => looksLikeMoney(n.raw));
+  const exact = nums.find(
+    (n) => n.index === index && Math.abs(n.value) > 0 && (looksLikeMoney(n.raw) || !anyMoney),
+  );
   if (exact) return exact;
   const drifted = nums.filter(
     (n) =>
